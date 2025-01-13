@@ -86,37 +86,57 @@ int is_file( const char *path )
 	return 0;
 }
 
-void write_to_file( const char *path, const char *new_content )
+
+static int do_write( const char *path, const char *buffer, size_t size, off_t offset, struct fuse_file_info *info )
 {
+
 
 	char temp_path[1024];
     snprintf(temp_path, sizeof(temp_path), "/tmp/%s", path);	
 
 	// Create empty file and upload to Dropbox
-	FILE *local_file = fopen(temp_path, "w");
+	FILE *local_file = fopen(temp_path, "r+");
     if (!local_file) {
         perror("fopen");
         return;
     }
-    fwrite(new_content, 1, strlen(new_content), local_file);
+	printf("apel\n");
+
+	fseek(local_file, 0, SEEK_END);
+    long current_size = ftell(local_file);
+    if (offset + size > current_size) {
+        if (ftruncate(fileno(local_file), offset + size) != 0) {
+            perror("ftruncate");
+            fclose(local_file);
+            return -EIO;
+        }
+    }
+
+
+	fseek(local_file, offset, SEEK_SET);
+    int bytes = fwrite(buffer, 1, size, local_file);
     fclose(local_file); 
+	printf("apel\n");
+
+	if (bytes != size) {
+        fprintf(stderr, "Failed to write all data to file: %s\n", temp_path);
+    }
 
     char command[1024];
     snprintf(command, sizeof(command), "dbxcli put %s %s", temp_path, path);
     int ret = system(command);
     if (ret == -1) {
         perror("Error executing dbxcli command");
-        return;
+        return 0;
     } else if (WEXITSTATUS(ret) != 0) {
         fprintf(stderr, "dbxcli command failed with exit code %d\n", WEXITSTATUS(ret));
-        return;
+        return 0;
     }
     printf("File uploaded successfully: %s -> %s\n", temp_path, path);
-
+	return bytes;
 
 }
 
-// ... //
 
 static int do_getattr( const char *path, struct stat *st )
 {
@@ -141,7 +161,7 @@ static int do_getattr( const char *path, struct stat *st )
         st->st_mode = S_IFREG | 0644;  // Regular file with rw-r--r-- permissions
         st->st_nlink = 1;              // Regular file link count
         st->st_size = 2048;  
-		// sometimes the kernel want the atributes for /Input and /Input/output.
+		// sometimes the kernel wants the atributes for /Input and /Input/output.
 		// we do not have these files in our structure and don't know why the kernel does this
 		// but we need to return some data
 	} else
@@ -277,13 +297,6 @@ static int do_mknod( const char *path, mode_t mode, dev_t rdev )
 	return 0;
 }
 
-static int do_write( const char *path, const char *buffer, size_t size, off_t offset, struct fuse_file_info *info )
-{
-	write_to_file( path, buffer );
-	
-	return size;
-}
-
 static struct fuse_operations operations = {
     .getattr	= do_getattr,
     .readdir	= do_readdir,
@@ -292,6 +305,12 @@ static struct fuse_operations operations = {
     .mknod		= do_mknod,
     .write		= do_write,
 };
+
+// ls -- readdir & getattr
+// echo "text" > file.txt -- mknod & write
+// mkdir -- mkdir
+// cat file.txt -- read && getattr
+// is_file is_dir
 
 int main( int argc, char *argv[] )
 {
